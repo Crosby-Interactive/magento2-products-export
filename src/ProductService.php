@@ -23,7 +23,7 @@ class ProductService{
     /**
      * @var
      */
-    private $dbPrefix = 'sg_';
+    private $dbPrefix = '';
 
     public function __construct()
     {
@@ -33,6 +33,21 @@ class ProductService{
         /*$config = Config::load();
         $dbConfig = $config['db'];
         $this->dbPrefix = $dbConfig['prefix'];*/
+    }
+
+    public function getManufacturerFromId($manId, $storeId = 1)
+    {
+        $manSql = "SELECT value FROM eav_attribute_option_value WHERE option_id = " . $manId . " AND store_id = " . $storeId;
+        $stmt = $this->dbh->prepare($manSql, array(PDO::ATTR_CURSOR => PDO::CURSOR_FWDONLY));
+
+        $stmt->execute([
+            ':limit' => 1,
+            ':offset' => 0,
+        ]);
+
+        $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return $data[0]['value'];
     }
 
     /**
@@ -45,12 +60,19 @@ class ProductService{
     public function getData(int $limit = 100, int $offset = 0, $threads = null, $seed = null)
     {
         $sql = 'SELECT 
-                    cpe.*,
+                    DISTINCT(cpe.entity_id),
+                    cpe.attribute_set_id,
+                    cpe.type_id,
+                    cpe.sku,
+                    cpe.has_options,
+                    cpe.required_options,
+                    cpe.created_at,
+                    cpe.updated_at,
                     categories_aggregated.category_id,
                     categories_aggregated.category_name,
-                    res.rating_summary,
-                    res.reviews_count,
-                    ciss.qty as stock_quantity
+                    ciss.qty as stock_quantity,
+                    CONCAT ("https://mdev.cruisercustomizing.com/", url.request_path) AS request_path,
+                    url.metadata
                 FROM ' . $this->dbPrefix . 'catalog_product_entity cpe
                 LEFT JOIN (
                     SELECT 
@@ -62,22 +84,27 @@ class ProductService{
                     INNER JOIN ' . $this->dbPrefix . 'catalog_category_entity cce
                     ON ccp.category_id = cce.entity_id
                     INNER JOIN ' . $this->dbPrefix . 'catalog_category_entity_varchar ccev
-                    ON ccev.row_id = ccp.category_id
+                    ON ccev.entity_id = ccp.category_id
                     INNER JOIN ' . $this->dbPrefix . 'eav_attribute ea
                     ON ea.attribute_id = ccev.attribute_id
                     WHERE  ea.entity_type_id=3 AND store_id = 0 AND attribute_code = "name"
                 ) categories_aggregated
-                ON cpe.row_id = categories_aggregated.product_id
+                ON cpe.entity_id = categories_aggregated.product_id
+                
+                INNER JOIN (SELECT * FROM url_rewrite WHERE metadata != "") url ON url.entity_id = cpe.entity_id
+                
+                Inner Join catalog_product_entity_int as i on i.entity_id=cpe.entity_id
+                Inner Join eav_attribute_option_value as ov on i.value=ov.option_id
                 
                 LEFT JOIN
                 (SELECT * FROM ' . $this->dbPrefix . 'review_entity_summary WHERE entity_type = 1 AND store_id = 0 ) res
-                ON cpe.row_id = res.entity_pk_value
+                ON cpe.entity_id = res.entity_pk_value
                 
                 LEFT JOIN
                 (SELECT * FROM ' . $this->dbPrefix . 'cataloginventory_stock_status WHERE stock_id = 1 AND website_id = 0 ) ciss
-                ON cpe.row_id = ciss.product_id
+                ON cpe.entity_id = ciss.product_id
                 
-                WHERE 1 = 1 #AND row_id = 43871 
+                WHERE ov.value="OEM Part" 
                 
                 ';
 
@@ -88,6 +115,7 @@ class ProductService{
         $sql .= ' LIMIT ' . $limit . ' OFFSET ' . $offset;
 
         $stmt = $this->dbh->prepare($sql, array(PDO::ATTR_CURSOR => PDO::CURSOR_FWDONLY));
+
         $stmt->execute([
             ':limit' => $limit,
             ':offset' => $offset,
@@ -103,26 +131,26 @@ class ProductService{
      * @return array
      */
     public function getRow(array $row){
-        $id = $row['row_id'];
+        $id = $row['entity_id'];
         $data = [
             'id' => $row['entity_id'],
             'sku' => $row['sku'],
-            'attribute_set_id' => $row['attribute_set_id'],
-            'type_id' => $row['type_id'],
+            // 'attribute_set_id' => $row['attribute_set_id'],
+            // 'type_id' => $row['type_id'],
             'created_at' => $row['created_at'],
             'updated_at' => $row['updated_at'],
-            'required_options' => $row['required_options'],
+            // 'required_options' => $row['required_options'],
             'categories' => [$row['category_name']],
             'category_ids' => [$row['category_id']],
-            'rating_summary' => $row['rating_summary'],
-            'reviews_count' => $row['reviews_count'],
-            'stock_quantity' => intval($row['stock_quantity'])
+//            'rating_summary' => $row['rating_summary'],
+//            'reviews_count' => $row['reviews_count'],
+            'url' => $row['request_path'],
+            // 'stock_quantity' => intval($row['stock_quantity'])
         ];
 
         $characteristics = [];
 
         $eavAttributes = $this->getEavAttributes($id);
-
 
         foreach ($eavAttributes as $attribute){
             $code = $attribute['attribute_code'];
@@ -139,7 +167,7 @@ class ProductService{
 
         $data['characteristics'] = $characteristics;
         $data['name_exact'] = $data['name'];
-        $data['name_suggest'] = $this->getNameSuggest($data['name']);
+        // $data['name_suggest'] = $this->getNameSuggest($data['name']);
 
         return $data;
     }
@@ -151,7 +179,7 @@ class ProductService{
     private function getEavAttributes($entityId){
         $sql = '
             (SELECT
-                  row_id,
+                  entity_id,
                 attribute_code,
                 frontend_label,
                 value,
@@ -160,14 +188,14 @@ class ProductService{
             FROM ' . $this->dbPrefix . 'catalog_product_entity_varchar cpe
             INNER JOIN ' . $this->dbPrefix . 'eav_attribute ea
             ON ea.attribute_id = cpe.attribute_id
-            WHERE cpe.row_id = :entity_id AND ea.entity_type_id=4 AND store_id = 0
+            WHERE cpe.entity_id = :entity_id AND ea.entity_type_id=4 AND store_id = 0
             )
             
             UNION
             
             (
             SELECT
-                  row_id,
+                  entity_id,
                 attribute_code,
                 frontend_label,
                 value,
@@ -176,14 +204,14 @@ class ProductService{
             FROM ' . $this->dbPrefix . 'catalog_product_entity_text cpe
             INNER JOIN ' . $this->dbPrefix . 'eav_attribute ea
             ON ea.attribute_id = cpe.attribute_id
-            WHERE cpe.row_id = :entity_id AND ea.entity_type_id=4 AND store_id = 0
+            WHERE cpe.entity_id = :entity_id AND ea.entity_type_id=4 AND store_id = 0
             )
             
             UNION
             
             (
             SELECT
-                  row_id,
+                  entity_id,
                 attribute_code,
                 frontend_label,
                 value,
@@ -192,14 +220,14 @@ class ProductService{
             FROM ' . $this->dbPrefix . 'catalog_product_entity_int cpe
             INNER JOIN ' . $this->dbPrefix . 'eav_attribute ea
             ON ea.attribute_id = cpe.attribute_id
-            WHERE cpe.row_id = :entity_id AND ea.entity_type_id=4 AND store_id = 0
+            WHERE cpe.entity_id = :entity_id AND ea.entity_type_id=4 AND store_id = 0
             )
             
             UNION
             
             (
             SELECT
-                  row_id,
+                  entity_id,
                 attribute_code,
                 frontend_label,
                 value,
@@ -208,7 +236,7 @@ class ProductService{
             FROM ' . $this->dbPrefix . 'catalog_product_entity_decimal cpe
             INNER JOIN ' . $this->dbPrefix . 'eav_attribute ea
             ON ea.attribute_id = cpe.attribute_id
-            WHERE cpe.row_id = :entity_id AND ea.entity_type_id=4 AND store_id = 0
+            WHERE cpe.entity_id = :entity_id AND ea.entity_type_id=4 AND store_id = 0
             )';
 
         $stmt = $this->dbh->prepare($sql, array(PDO::ATTR_CURSOR => PDO::CURSOR_FWDONLY));

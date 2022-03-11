@@ -1,7 +1,6 @@
 <?php
 
 use src\Config;
-use src\Curl;
 use src\ProductService;
 
 require '_bootstrap.php';
@@ -20,13 +19,20 @@ if(isset($argv[1],$argv[2])){
 $limit = 1000;
 $page = 1;
 $offset = 0;
+$storeId = 1;
 
 $productService = new ProductService();
-$curl = new Curl();
 
 $config = Config::load();
 $baseUrl = $config['base_url'];
 $headers = ['Content-Type: application/json'];
+$file = 'product.csv';
+
+if (file_exists($file)) {
+    unlink($file);
+}
+
+file_put_contents($file, '"SKU","Name","MPN","Manufacturer","URL"'. "\n");
 
 $index = 1;
 for(;;){
@@ -43,12 +49,33 @@ for(;;){
         $id = $row['entity_id'];
 
         $row = $productService->getRow($row);
-        $body = json_encode($row);
 
-        $url = $baseUrl . $id;
-        $curl->sendPostRequest($url, $body, $headers);
+        // print_r($row); die;
 
-        $message = 'created product #' . $index . ', id: ' . $id . "\n";
+        $catcsv = null;
+        foreach($row['categories'] as $category) {
+            $catcsv .=  ' ,' . $category;
+        }
+
+        $mpn = null;
+        $manufacturer = null;
+        foreach ($row['characteristics'] as $characteristic) {
+            if (strtolower($characteristic['label']) === 'mpn') {
+                $mpn = $characteristic['value'];
+            }
+
+            if (strtolower($characteristic['label']) === 'manufacturerid') {
+                $manufacturer = $productService->getManufacturerFromId($characteristic['value'], $storeId);
+            }
+        }
+
+        $current = file_get_contents($file);
+
+        $current .= '"' . $row['sku'] . '","' . $row['name_exact'] . '","' . $row['mpn'] . '","' . $manufacturer . '","' . $row['url'] . '"';
+
+        file_put_contents($file, $current. "\n");
+
+        $message = 'exported product #' . $index . ', id: ' . $id . "\n";
         echo $message;
 
         $index++;
